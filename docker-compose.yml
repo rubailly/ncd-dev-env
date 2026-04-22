@@ -1,0 +1,239 @@
+version: "3.8"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NCD Community Referral — Local Development Environment
+#
+# Services:
+#   OpenMRS   → http://localhost:8080/openmrs  (admin / Admin123)
+#   OpenFn    → http://localhost:4000          (see OPENFN_ADMIN_EMAIL in .env)
+#   ERPNext   → http://localhost:8000          (admin / admin)
+#   WhatsApp  → http://localhost:9000          (mock — logs all API calls)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── OpenMRS ──────────────────────────────────────────────────────────────
+
+  openmrs:
+    image: openmrs/openmrs-reference-application-3-backend:nightly
+    restart: unless-stopped
+    environment:
+      OMRS_CONFIG_AUTO_UPDATE_DATABASE: "true"
+      OMRS_CONFIG_CREATE_TABLES: "true"
+      OMRS_DB_URL: "jdbc:mysql://openmrs-db:3306/openmrs?useSSL=false&autoReconnect=true&sessionVariables=default_storage_engine%3DInnoDB"
+      OMRS_DB_USERNAME: openmrs
+      OMRS_DB_PASSWORD: "${OPENMRS_DB_PASSWORD:-openmrs}"
+      OMRS_ADMIN_USER_PASSWORD: "${OPENMRS_ADMIN_PASSWORD:-Admin123}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      openmrs-db:
+        condition: service_healthy
+    volumes:
+      - openmrs-data:/openmrs/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/openmrs/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 15
+      start_period: 120s
+
+  openmrs-frontend:
+    image: openmrs/openmrs-reference-application-3-frontend:nightly
+    restart: unless-stopped
+    environment:
+      SPA_PATH: /openmrs/spa
+      API_URL: /openmrs
+      SPA_CONFIG_URLS: /openmrs/spa/config-core_demo.json
+    depends_on:
+      - openmrs
+    ports:
+      - "8081:80"
+
+  openmrs-db:
+    image: mysql:5.7
+    restart: unless-stopped
+    command: --character-set-server=utf8 --collation-server=utf8_general_ci
+    environment:
+      MYSQL_DATABASE: openmrs
+      MYSQL_USER: openmrs
+      MYSQL_PASSWORD: "${OPENMRS_DB_PASSWORD:-openmrs}"
+      MYSQL_ROOT_PASSWORD: "${OPENMRS_DB_ROOT_PASSWORD:-openmrs_root}"
+    volumes:
+      - openmrs-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "--host=localhost", "-u", "openmrs", "-popenmrs"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── OpenFn Lightning ─────────────────────────────────────────────────────
+
+  openfn:
+    image: ghcr.io/openfn/lightning:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "postgresql://openfn:${OPENFN_DB_PASSWORD:-openfn}@openfn-db:5432/lightning"
+      SECRET_KEY_BASE: "${OPENFN_SECRET_KEY_BASE:-local_dev_secret_key_base_must_be_at_least_64_chars_long_xxxxxxxxxxx}"
+      PRIMARY_ENCRYPTION_KEY: "${OPENFN_ENCRYPTION_KEY:-local_dev_encryption_key_base64==}"
+      WORKER_SECRET: "${OPENFN_WORKER_SECRET:-local_dev_worker_secret}"
+      DISABLE_DB_SSL: "true"
+      ORIGINS: "http://localhost:4000"
+      URL_HOST: localhost
+      URL_PORT: "4000"
+      LOG_LEVEL: warn
+    ports:
+      - "4000:4000"
+    depends_on:
+      openfn-db:
+        condition: service_healthy
+    volumes:
+      - openfn-data:/app/storage
+
+  openfn-worker:
+    image: ghcr.io/openfn/ws-worker:latest
+    restart: unless-stopped
+    environment:
+      LIGHTNING_URL: "ws://openfn:4000/worker"
+      WORKER_SECRET: "${OPENFN_WORKER_SECRET:-local_dev_worker_secret}"
+      LOG_LEVEL: info
+    depends_on:
+      - openfn
+
+  openfn-db:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lightning
+      POSTGRES_USER: openfn
+      POSTGRES_PASSWORD: "${OPENFN_DB_PASSWORD:-openfn}"
+    volumes:
+      - openfn-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openfn -d lightning"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── ERPNext ──────────────────────────────────────────────────────────────
+
+  erpnext-backend:
+    image: frappe/erpnext:${ERPNEXT_VERSION:-v15}
+    restart: unless-stopped
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+      - erpnext-logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      erpnext-db:
+        condition: service_healthy
+      erpnext-redis:
+        condition: service_started
+
+  erpnext-frontend:
+    image: frappe/erpnext:${ERPNEXT_VERSION:-v15}
+    restart: unless-stopped
+    command: nginx-entrypoint.sh
+    environment:
+      BACKEND: erpnext-backend:8000
+      SOCKETIO: erpnext-websocket:9000
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      FRAPPE_SITE_NAME_HEADER: local.ebuzima
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    ports:
+      - "8000:8080"
+    depends_on:
+      - erpnext-backend
+
+  erpnext-scheduler:
+    image: frappe/erpnext:${ERPNEXT_VERSION:-v15}
+    restart: unless-stopped
+    command: bench schedule
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+      - erpnext-logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      - erpnext-backend
+
+  erpnext-worker:
+    image: frappe/erpnext:${ERPNEXT_VERSION:-v15}
+    restart: unless-stopped
+    command: bench worker --queue long,default,short
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+      - erpnext-logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      - erpnext-backend
+
+  erpnext-websocket:
+    image: frappe/erpnext:${ERPNEXT_VERSION:-v15}
+    restart: unless-stopped
+    command: node /home/frappe/frappe-bench/apps/frappe/socketio.js
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      - erpnext-backend
+
+  erpnext-configurator:
+    image: frappe/erpnext:${ERPNEXT_VERSION:-v15}
+    restart: on-failure
+    command: >
+      bash -c "
+        bench set-config -g db_host erpnext-db &&
+        bench set-config -gp db_port 3306 &&
+        bench set-config -g redis_cache redis://erpnext-redis:6379/0 &&
+        bench set-config -g redis_queue redis://erpnext-redis:6379/1 &&
+        bench set-config -g redis_socketio redis://erpnext-redis:6379/2 &&
+        bench set-config -g socketio_port 9000
+      "
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      erpnext-db:
+        condition: service_healthy
+
+  erpnext-db:
+    image: mariadb:10.6
+    restart: unless-stopped
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --skip-character-set-client-handshake
+      --skip-innodb-read-only-compressed
+    environment:
+      MYSQL_ROOT_PASSWORD: "${ERPNEXT_DB_ROOT_PASSWORD:-erpnext_root}"
+    volumes:
+      - erpnext-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "--host=localhost", "-perpnext_root"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  erpnext-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - erpnext-redis-data:/data
+
+  # ── WhatsApp Mock ────────────────────────────────────────────────────────
+  # Accepts any POST to /v19.0/*/messages and echoes it back.
+  # Lets the full pipeline run locally without a real Meta account.
+
+  mock-whatsapp:
+    image: mendhak/http-https-echo:latest
+    restart: unless-stopped
+    environment:
+      HTTP_PORT: "9000"
+    ports:
+      - "9000:9000"
+
+volumes:
+  openmrs-data:
+  openmrs-db-data:
+  openfn-data:
+  openfn-db-data:
+  erpnext-sites:
+  erpnext-logs:
+  erpnext-db-data:
+  erpnext-redis-data:
