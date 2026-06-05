@@ -1,0 +1,98 @@
+{
+  "name": "NCD Community Screening",
+  "description": "Community NCD screening — records blood pressure and blood glucose for referral",
+  "version": "1.0",
+  "published": true,
+  "retired": false,
+  "encounter": "NCD Community Screening",
+  "processor": "EncounterFormProcessor",
+  "referencedForms": [],
+  "pages": [
+    {
+      "label": "NCD Community Screening",
+      "sections": [
+        {
+          "label": "Screening Details",
+          "isExpanded": "true",
+          "questions": [
+            {
+              "label": "Date of Screening",
+              "type": "encounterDatetime",
+              "required": "true",
+              "id": "encounterDate",
+              "questionOptions": {
+                "rendering": "date"
+              }
+            },
+            {
+              "label": "Screening Location",
+              "type": "encounterLocation",
+              "required": "true",
+              "id": "encounterLocation",
+              "questionOptions": {
+                "rendering": "ui-select-extended"
+              }
+            },
+            {
+              "label": "Health Worker",
+              "type": "encounterProvider",
+              "required": "true",
+              "id": "encounterProvider",
+              "questionOptions": {
+                "rendering": "ui-select-extended"
+              }
+            }
+          ]
+        },
+        {
+          "label": "Blood Pressure",
+          "isExpanded": "true",
+          "questions": [
+            {
+              "label": "Systolic Blood Pressure (mmHg)",
+              "type": "obs",
+              "required": false,
+              "id": "systolicBP",
+              "questionOptions": {
+                "rendering": "number",
+                "concept": "__SYSTOLIC_UUID__",
+                "min": "50",
+                "max": "250"
+              }
+            },
+            {
+              "label": "Diastolic Blood Pressure (mmHg)",
+              "type": "obs",
+              "required": false,
+              "id": "diastolicBP",
+              "questionOptions": {
+                "rendering": "number",
+                "concept": "__DIASTOLIC_UUID__",
+                "min": "30",
+                "max": "150"
+              }
+            }
+          ]
+        },
+        {
+          "label": "Blood Glucose",
+          "isExpanded": "true",
+          "questions": [
+            {
+              "label": "Blood Glucose (mg/dL)",
+              "type": "obs",
+              "required": false,
+              "id": "bloodGlucose",
+              "questionOptions": {
+                "rendering": "number",
+                "concept": "__GLUCOSE_UUID__",
+                "min": "20",
+                "max": "600"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

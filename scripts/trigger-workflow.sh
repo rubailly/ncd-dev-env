@@ -14,34 +14,36 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-echo "Fetching workflow ID..."
-WORKFLOW_ID=$(curl -sf \
+echo "Fetching webhook trigger ID..."
+WEBHOOK_TRIGGER_ID=$(curl -sf \
   -H "Authorization: Bearer ${TOKEN}" \
-  "${OPENFN_URL}/api/v1/projects/${PROJECT_ID}/workflows" \
+  "${OPENFN_URL}/api/projects/${PROJECT_ID}/workflows" \
   | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-workflows = data.get('data', [])
-for w in workflows:
+for w in data.get('workflows', []):
     if 'NCD' in w.get('name', ''):
-        print(w['id'])
-        break
+        for t in w.get('triggers', []):
+            if t.get('type') == 'webhook':
+                print(t['id'])
+                break
 " 2>/dev/null || echo "")
 
-if [ -z "$WORKFLOW_ID" ]; then
-  echo "Could not find the NCD workflow. Is the project deployed?"
+if [ -z "$WEBHOOK_TRIGGER_ID" ]; then
+  echo "Could not find the NCD webhook trigger. Is the project deployed?"
   echo "Run 'make deploy' first, then try again."
   echo ""
   echo "Alternatively, trigger it manually in the OpenFn UI at ${OPENFN_URL}"
   exit 0
 fi
 
-echo "Triggering workflow ${WORKFLOW_ID}..."
-curl -sf -X POST \
-  -H "Authorization: Bearer ${TOKEN}" \
+echo "Triggering via webhook ${WEBHOOK_TRIGGER_ID}..."
+RESULT=$(curl -sf -X POST \
   -H "Content-Type: application/json" \
-  "${OPENFN_URL}/api/v1/workflows/${WORKFLOW_ID}/runs" \
-  -d '{}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Run started: {d.get(\"data\",{}).get(\"id\",\"(see UI)\")}')"
+  "${OPENFN_URL}/i/${WEBHOOK_TRIGGER_ID}" \
+  -d '{}')
+WO_ID=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('work_order_id','(see UI)'))" 2>/dev/null || echo "(see UI)")
+echo "Work order: ${WO_ID}"
 
 echo ""
 echo "Watch it run at: ${OPENFN_URL}/projects/${PROJECT_ID}/runs"

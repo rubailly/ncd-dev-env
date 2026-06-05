@@ -24,6 +24,8 @@ services:
       OMRS_DB_USERNAME: openmrs
       OMRS_DB_PASSWORD: "${OPENMRS_DB_PASSWORD:-openmrs}"
       OMRS_ADMIN_USER_PASSWORD: "${OPENMRS_ADMIN_PASSWORD:-Admin123}"
+      OMRS_DB_HOSTNAME: openmrs-db
+      OMRS_DB_PORT: "3306"
     ports:
       - "8080:8080"
     depends_on:
@@ -49,6 +51,8 @@ services:
       - openmrs
     ports:
       - "8081:80"
+    volumes:
+      - ./config/openmrs-frontend-nginx.conf:/etc/nginx/nginx.conf:ro
 
   openmrs-db:
     image: mysql:5.7
@@ -70,38 +74,58 @@ services:
   # ── OpenFn Lightning ─────────────────────────────────────────────────────
 
   openfn:
-    image: ghcr.io/openfn/lightning:latest
+    image: openfn/lightning:latest
     restart: unless-stopped
     environment:
       DATABASE_URL: "postgresql://openfn:${OPENFN_DB_PASSWORD:-openfn}@openfn-db:5432/lightning"
       SECRET_KEY_BASE: "${OPENFN_SECRET_KEY_BASE:-local_dev_secret_key_base_must_be_at_least_64_chars_long_xxxxxxxxxxx}"
       PRIMARY_ENCRYPTION_KEY: "${OPENFN_ENCRYPTION_KEY:-local_dev_encryption_key_base64==}"
       WORKER_SECRET: "${OPENFN_WORKER_SECRET:-local_dev_worker_secret}"
+      WORKER_RUNS_PRIVATE_KEY: "${OPENFN_WORKER_RUNS_PRIVATE_KEY}"
       DISABLE_DB_SSL: "true"
       ORIGINS: "http://localhost:4000"
       URL_HOST: localhost
       URL_PORT: "4000"
+      PORT: "4001"
       LOG_LEVEL: warn
+      APOLLO_ENDPOINT: "http://apollo:3000"
+      AI_ASSISTANT_API_KEY: "${ANTHROPIC_API_KEY}"
     ports:
       - "4000:4000"
     depends_on:
       openfn-db:
         condition: service_healthy
+      apollo:
+        condition: service_started
     volumes:
       - openfn-data:/app/storage
 
-  openfn-worker:
-    image: ghcr.io/openfn/ws-worker:latest
+  # nginx proxy: shares openfn's network namespace to reach Lightning on 127.0.0.1:4001
+  # and listens on 0.0.0.0:4000 so Docker's port mapping can forward to it.
+  openfn-nginx:
+    image: nginx:alpine
     restart: unless-stopped
-    environment:
-      LIGHTNING_URL: "ws://openfn:4000/worker"
-      WORKER_SECRET: "${OPENFN_WORKER_SECRET:-local_dev_worker_secret}"
-      LOG_LEVEL: info
+    network_mode: "service:openfn"
+    volumes:
+      - ./config/nginx-openfn.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - openfn
 
+  openfn-worker:
+    image: openfn/ws-worker:latest
+    restart: unless-stopped
+    environment:
+      WORKER_LIGHTNING_SERVICE_URL: "ws://openfn:4000/worker"
+      WORKER_SECRET: "${OPENFN_WORKER_SECRET:-local_dev_worker_secret}"
+      WORKER_LOG_LEVEL: info
+      WORKER_COLLECTIONS_URL: "http://openfn:4000/collections"
+      WORKER_COLLECTIONS_VERSION: "0.9.0"
+    depends_on:
+      - openfn
+      - openfn-nginx
+
   openfn-db:
-    image: postgres:14-alpine
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: lightning
@@ -114,6 +138,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ── Apollo (OpenFn AI service) ───────────────────────────────────────────
+  # Provides AI chat (job assistant + workflow generation) in the OpenFn desk.
+  # Requires ANTHROPIC_API_KEY in .env to talk to Claude.
+  apollo:
+    image: openfn/apollo:latest
+    restart: unless-stopped
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    ports:
+      - "3000:3000"
 
   # ── ERPNext ──────────────────────────────────────────────────────────────
 

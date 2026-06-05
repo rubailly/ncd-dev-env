@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[ -f .env ] && export $(grep -v '^#' .env | xargs)
+[ -f .env ] && set -o allexport && source .env && set +o allexport
 
 OPENMRS_URL="http://localhost:8080/openmrs"
 OPENMRS_USER="admin"
@@ -20,7 +20,7 @@ if [ -z "$NCD_ENCOUNTER_TYPE" ]; then
 fi
 
 # ── Get first available location ──────────────────────────────────────────────
-LOCATION_UUID=$(get "location?q=Community+Site&limit=1" \
+LOCATION_UUID=$(get "location?q=Kamonyi+Community&limit=1" \
   | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['results'][0]['uuid'] if r['results'] else '')" 2>/dev/null || echo "")
 
 if [ -z "$LOCATION_UUID" ]; then
@@ -76,7 +76,8 @@ create_patient_and_encounter() {
     },
     \"identifiers\": [{
       \"identifier\": \"NCD-$(date +%s%N | tail -c 6)\",
-      \"identifierType\": \"05a29f94-c0ed-11e2-94be-8c13b969e334\",
+      \"identifierType\": \"8d79403a-c2cc-11de-8d13-0010c6dffd0f\",
+      \"location\": \"${LOCATION_UUID}\",
       \"preferred\": true
     }]
   }" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uuid',''))" 2>/dev/null || echo "")

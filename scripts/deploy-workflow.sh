@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[ -f .env ] && export $(grep -v '^#' .env | xargs)
+[ -f .env ] && set -o allexport && source .env && set +o allexport
 
 WORKFLOW_DIR="${WORKFLOW_DIR:-../ncd-community-referral}"
 GENERATED_DIR="config/generated"
@@ -38,10 +38,10 @@ conditions = [
 
 r = subprocess.run([
     "curl", "-sf", "-X", "PUT",
-    "http://localhost:4000/api/v1/collections/ncd-screening-config/conditions",
+    "http://localhost:4000/collections/ncd-screening-config/conditions",
     "-H", "Content-Type: application/json",
     "-H", f"Authorization: Bearer {token}",
-    "-d", json.dumps({"value": conditions}),
+    "-d", json.dumps({"value": json.dumps(conditions)}),
 ], capture_output=True, text=True)
 
 print(f"  ncd-screening-config patched: {'ok' if r.returncode == 0 else r.stderr[:80]}")
