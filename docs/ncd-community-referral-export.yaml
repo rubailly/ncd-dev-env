@@ -1,0 +1,523 @@
+name: ncd-community-referral
+description: |
+  Polls OpenMRS for community NCD screening encounters with high readings, creates patient referrals in E-Buzima (ERPNext) at the appropriate health center, and sends WhatsApp notifications to the health center and patient.
+  
+collections:
+  ncd-screening-config:
+    name: ncd-screening-config
+  rw-facility-routing:
+    name: rw-facility-routing
+channels: null
+credentials:
+  admin@local.dev-EBuzima-API:
+    name: EBuzima API
+    owner: admin@local.dev
+  admin@local.dev-OpenMRS:
+    name: OpenMRS
+    owner: admin@local.dev
+  admin@local.dev-WhatsApp-Meta-API:
+    name: WhatsApp Meta API
+    owner: admin@local.dev
+workflows:
+  NCD-Referral-Pipeline:
+    name: NCD Referral Pipeline
+    jobs:
+      Fetch-NCD-Encounters-from-OpenMRS:
+        name: Fetch NCD Encounters from OpenMRS
+        adaptor: '@openfn/language-openmrs@5.3.11'
+        credential: admin@local.dev-OpenMRS
+        body: |
+          const OVERLAP_MS = 2 * 60 * 1000;
+          const DEFAULT_LOOKBACK_MS = 15 * 60 * 1000;
+          // Default is the local dev UUID; collection key overrides for production
+          const DEFAULT_ENCOUNTER_TYPE_UUID = '2b7daae7-8fe7-4c43-bc3b-23d9085b62ff';
+          
+          fn(async state => {
+            const { instanceUrl, username, password } = state.configuration;
+            const authHeaders = util.makeBasicAuthHeader(username, password);
+          
+            let encounterTypeUuid = DEFAULT_ENCOUNTER_TYPE_UUID;
+            try {
+              const raw = await state.collections.get('ncd-screening-config', 'encounter-type-uuid');
+              if (raw && typeof raw === 'string') encounterTypeUuid = raw.trim();
+            } catch (_) {}
+          
+            const since = state.lastRunAt
+              ? new Date(new Date(state.lastRunAt).getTime() - OVERLAP_MS).toISOString()
+              : new Date(Date.now() - DEFAULT_LOOKBACK_MS).toISOString();
+          
+            console.log(`Polling OpenMRS for NCD encounters since ${since} (type: ${encounterTypeUuid})`);
+          
+            // FHIR Encounter search by type+date (REST encounter-by-type search returns 500 without patient param)
+            const fhirUrl = `${instanceUrl}/ws/fhir2/R4/Encounter` +
+              `?type=${encounterTypeUuid}&date=ge${encodeURIComponent(since)}&_count=200`;
+          
+            const fhirResp = await util.request('GET', fhirUrl, {
+              headers: { ...authHeaders, Accept: 'application/fhir+json' },
+              parseAs: 'json',
+            });
+          
+            if (fhirResp.statusCode >= 300) {
+              throw new Error(`FHIR Encounter search failed: HTTP ${fhirResp.statusCode}`);
+            }
+          
+            const uuids = (fhirResp.body?.entry || []).map(e => e.resource?.id).filter(Boolean);
+            const processedUuids = new Set(state.processedUuids || []);
+            const newUuids = uuids.filter(id => !processedUuids.has(id));
+          
+            console.log(`FHIR found ${uuids.length} encounter(s), ${newUuids.length} not yet processed`);
+          
+            // Fetch full REST encounter details (with obs) for each new encounter
+            const encounters = [];
+            for (const uuid of newUuids) {
+              const resp = await util.request('GET', `${instanceUrl}/ws/rest/v1/encounter/${uuid}?v=full`, {
+                headers: { ...authHeaders, Accept: 'application/json' },
+                parseAs: 'json',
+              });
+              if (resp.statusCode < 300) {
+                encounters.push(resp.body);
+              } else {
+                console.warn(`Could not fetch encounter ${uuid}: HTTP ${resp.statusCode}`);
+              }
+            }
+          
+            console.log(`Fetched full details for ${encounters.length} encounter(s)`);
+          
+            return {
+              ...state,
+              encounters,
+              lastRunAt: new Date().toISOString(),
+            };
+          });
+          
+      Check-Obs-Against-NCD-Thresholds:
+        name: Check Obs Against NCD Thresholds
+        adaptor: '@openfn/language-common@3.3.4'
+        credential: null
+        body: |
+          // Job 2: Check Obs Against NCD Thresholds
+          // Adaptor: @openfn/lang-collections
+          //
+          // Reads the ncd-screening-config Collection and checks each encounter's obs
+          // against configured concept UUIDs and threshold values.
+          // Only encounters with at least one flagged obs proceed to the next step.
+          
+          collections.get('ncd-screening-config', 'conditions');
+          
+          fn(state => {
+            // Collections API stores values as JSON-encoded strings; parse if needed
+            const raw = state.data;
+            const conditions = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            const encounters = state.encounters || [];
+          
+            if (encounters.length === 0) {
+              console.log('No new encounters to check. Pipeline will stop after this step.');
+              return { ...state, flaggedEncounters: [] };
+            }
+          
+            // Build a fast lookup: concept UUID → { conditionName, threshold }
+            const conceptIndex = {};
+            for (const condition of conditions) {
+              for (const obs of condition.obs) {
+                conceptIndex[obs.concept_uuid] = {
+                  conditionName: condition.name,
+                  label: obs.label,
+                  threshold: obs.threshold,
+                };
+              }
+            }
+          
+            const flaggedEncounters = [];
+          
+            for (const encounter of encounters) {
+              const flaggedConditions = [];
+          
+              for (const obs of encounter.obs || []) {
+                const conceptUuid = obs.concept?.uuid;
+                const rule = conceptIndex[conceptUuid];
+                if (!rule) continue;
+          
+                const value = parseFloat(obs.value);
+                if (!isNaN(value) && value >= rule.threshold) {
+                  flaggedConditions.push({
+                    conditionName: rule.conditionName,
+                    label: rule.label,
+                    conceptUuid,
+                    value,
+                    threshold: rule.threshold,
+                  });
+                }
+              }
+          
+              if (flaggedConditions.length > 0) {
+                // Deduplicate condition names for display (e.g. systolic + diastolic → one "Hypertension")
+                const uniqueConditionNames = [...new Set(flaggedConditions.map(f => f.conditionName))];
+                flaggedEncounters.push({
+                  ...encounter,
+                  flaggedConditions,
+                  conditionSummary: uniqueConditionNames.join(', '),
+                });
+              }
+            }
+          
+            console.log(
+              `${flaggedEncounters.length} of ${encounters.length} encounter(s) have high readings`
+            );
+          
+            return { ...state, flaggedEncounters };
+          });
+          
+      Fetch-Patient-Details-and-Route-to-Health-Center:
+        name: Fetch Patient Details and Route to Health Center
+        adaptor: '@openfn/language-openmrs@5.3.11'
+        credential: admin@local.dev-OpenMRS
+        body: |
+          fn(async state => {
+            const flaggedEncounters = state.flaggedEncounters || [];
+            if (flaggedEncounters.length === 0) {
+              console.log('No flagged encounters — skipping patient enrichment.');
+              return { ...state, referrals: [] };
+            }
+            console.log(`Enriching ${flaggedEncounters.length} flagged encounter(s)...`);
+          
+            const { instanceUrl, username, password } = state.configuration;
+            const authHeaders = util.makeBasicAuthHeader(username, password);
+            const collectionsEndpoint = state.configuration.collections_endpoint;
+            const collectionsToken = state.configuration.collections_token;
+          
+            const referrals = [];
+          
+            for (const encounter of flaggedEncounters) {
+              const patientUuid = encounter.patient?.uuid;
+              const locationUuid = encounter.location?.uuid;
+          
+              // Fetch patient details
+              let patient = null;
+              try {
+                const resp = await util.request(
+                  'GET',
+                  `${instanceUrl}/ws/rest/v1/patient/${patientUuid}?v=full`,
+                  { headers: { ...authHeaders, Accept: 'application/json' }, parseAs: 'json' }
+                );
+                if (resp.statusCode < 300) {
+                  const p = resp.body;
+                  const phoneAttr = (p.person.attributes || []).find(
+                    a => a.attributeType?.name === 'Telephone Number'
+                  );
+                  patient = {
+                    patientUuid: p.uuid,
+                    openmrsId: (p.identifiers || []).find(i => i.preferred)?.identifier || p.uuid,
+                    name: `${p.person.preferredName?.givenName || ''} ${p.person.preferredName?.familyName || ''}`.trim(),
+                    firstName: p.person.preferredName?.givenName || '',
+                    gender: p.person.gender,
+                    birthdate: p.person.birthdate?.split('T')[0] || null,
+                    phone: phoneAttr?.value || null,
+                  };
+                } else {
+                  console.warn(`Could not fetch patient ${patientUuid}: HTTP ${resp.statusCode} — skipping`);
+                  continue;
+                }
+              } catch (e) {
+                console.warn(`Patient fetch error for ${patientUuid}: ${e.message} — skipping`);
+                continue;
+              }
+          
+              // Look up health center routing
+              let healthCenter = null;
+              try {
+                const resp = await util.request(
+                  'GET',
+                  `${collectionsEndpoint}/rw-facility-routing/${locationUuid}`,
+                  {
+                    headers: { Authorization: `Bearer ${collectionsToken}` },
+                    parseAs: 'json',
+                  }
+                );
+                if (resp.statusCode === 200) {
+                  const raw = resp.body.value;
+                  healthCenter = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                } else {
+                  console.warn(
+                    `No routing entry for location ${locationUuid} — encounter ${encounter.uuid} skipped`
+                  );
+                  continue;
+                }
+              } catch (e) {
+                console.warn(
+                  `Routing lookup error for ${locationUuid}: ${e.message} — encounter ${encounter.uuid} skipped`
+                );
+                continue;
+              }
+          
+              referrals.push({
+                encounterUuid: encounter.uuid,
+                encounterDate: encounter.encounterDatetime,
+                locationName: encounter.location?.name || locationUuid,
+                conditionSummary: encounter.conditionSummary,
+                flaggedConditions: encounter.flaggedConditions,
+                patient,
+                healthCenter,
+              });
+            }
+          
+            console.log(`Built ${referrals.length} referral(s) with patient + routing data`);
+            return { ...state, referrals };
+          });
+          
+      Create-Patient-and-Referral-in-E-Buzima:
+        name: Create Patient and Referral in E-Buzima
+        adaptor: '@openfn/language-erpnext@1.1.2'
+        credential: admin@local.dev-EBuzima-API
+        body: |
+          fn(state => {
+            const referrals = state.referrals || [];
+            if (referrals.length === 0) {
+              console.log('No referrals to create in E-Buzima.');
+              return { ...state, createdReferrals: [] };
+            }
+            console.log(`Creating ${referrals.length} patient referral(s) in E-Buzima...`);
+            return state;
+          });
+          
+          fn(async state => {
+            const createdReferrals = [];
+          
+            // The "EBuzima API" credential predates this adaptor and stores its keys as
+            // api_key/api_secret (see jobs/4's git history). @openfn/language-erpnext's
+            // login() expects apiKey/apiSecret, and each health center has its own E-Buzima
+            // tenant (healthCenter.erp_base_url), so we re-authenticate per referral rather
+            // than relying on a single fixed credential baseUrl.
+            const tenantConfig = base => ({
+              ...state.configuration,
+              baseUrl: base,
+              apiKey: state.configuration.api_key,
+              apiSecret: state.configuration.api_secret,
+            });
+          
+            for (const referral of state.referrals) {
+              const { patient, healthCenter, encounterDate, conditionSummary, encounterUuid } = referral;
+              const base = healthCenter.erp_base_url.replace(/\/$/, '');
+              const config = tenantConfig(base);
+          
+              // -- Step 1: Find or create the Patient --
+              let erpPatientName;
+              try {
+                const searchState = await execute(
+                  getList('Patient', {
+                    filters: [['custom_openmrs_uuid', '=', patient.patientUuid]],
+                    fields: ['name'],
+                  })
+                )({ ...state, configuration: config });
+          
+                if (searchState.data?.length > 0) {
+                  erpPatientName = searchState.data[0].name;
+                  console.log(`  Patient already exists in ${healthCenter.hc_name}: ${erpPatientName}`);
+                } else {
+                  const nameParts = patient.name.split(' ');
+                  const firstName = patient.firstName || nameParts[0] || patient.name;
+                  const lastName = nameParts.slice(1).join(' ') || '-';
+          
+                  const createState = await execute(
+                    create('Patient', {
+                      first_name: firstName,
+                      last_name: lastName,
+                      patient_name: patient.name,
+                      sex: patient.gender === 'M' ? 'Male' : patient.gender === 'F' ? 'Female' : 'Other',
+                      dob: patient.birthdate,
+                      mobile: patient.phone || '',
+                      custom_openmrs_uuid: patient.patientUuid,
+                      custom_openmrs_id: patient.openmrsId,
+                      custom_referred_from: referral.locationName,
+                      custom_referral_condition: conditionSummary,
+                    })
+                  )({ ...state, configuration: config });
+          
+                  erpPatientName = createState.data?.name;
+                  if (!erpPatientName) {
+                    console.error(`  Failed to create patient in ${healthCenter.hc_name}:`, JSON.stringify(createState.data));
+                    continue;
+                  }
+                  console.log(`  Created patient in ${healthCenter.hc_name}: ${erpPatientName}`);
+                }
+              } catch (e) {
+                console.error(`  ERPNext patient upsert error for ${patient.name}: ${e.message}`);
+                continue;
+              }
+          
+              // -- Step 2: Create a Patient Appointment (the referral record) --
+              let appointmentId;
+              try {
+                const apptState = await execute(
+                  create('Patient Appointment', {
+                    patient: erpPatientName,
+                    appointment_for: 'Patient',
+                    appointment_type: 'NCD Follow-Up',
+                    appointment_date: encounterDate?.split('T')[0] || new Date().toISOString().split('T')[0],
+                    company: healthCenter.hc_name,
+                    practitioner: healthCenter.erp_practitioner || 'HLC-PRAC-2026-00001',
+                    notes: `NCD community referral. Condition: ${conditionSummary}. Screened at: ${referral.locationName}. OpenMRS encounter: ${encounterUuid}`,
+                    custom_source: 'Community NCD Screening',
+                    custom_fossa_code: healthCenter.fossa_code,
+                  })
+                )({ ...state, configuration: config });
+          
+                appointmentId = apptState.data?.name;
+                console.log(`  Appointment created in ${healthCenter.hc_name}: ${appointmentId || '(unknown)'}`);
+              } catch (e) {
+                console.error(`  ERPNext appointment error for ${erpPatientName}: ${e.message}`);
+              }
+          
+              createdReferrals.push({ ...referral, erpPatientName, appointmentId });
+            }
+          
+            console.log(`${createdReferrals.length} referral(s) successfully created in E-Buzima`);
+            return { ...state, createdReferrals };
+          });
+          
+      Send-WhatsApp-Notifications-to-HC-and-Patient:
+        name: Send WhatsApp Notifications to HC and Patient
+        adaptor: '@openfn/language-whatsapp@1.1.2'
+        credential: admin@local.dev-WhatsApp-Meta-API
+        body: |
+          fn(state => {
+            const createdReferrals = state.createdReferrals || [];
+            if (createdReferrals.length === 0) {
+              console.log('No referrals created — nothing to notify.');
+              return { ...state };
+            }
+            console.log(`Sending WhatsApp notifications for ${createdReferrals.length} referral(s)...`);
+            return state;
+          });
+          
+          fn(async state => {
+            // The "WhatsApp Meta API" credential predates this adaptor and stores the
+            // token as accessToken; @openfn/language-whatsapp's request() expects apiToken
+            // plus an explicit Graph API version (previously hardcoded into the URL).
+            const config = {
+              ...state.configuration,
+              apiToken: state.configuration.accessToken,
+              apiVersion: 'v19.0',
+            };
+          
+            const newlyProcessedUuids = [];
+          
+            const sendMessage = async payload => {
+              const resultState = await request('POST', 'messages', payload)({
+                ...state,
+                configuration: config,
+              });
+              return resultState.data;
+            };
+          
+            for (const referral of state.createdReferrals) {
+              const { patient, healthCenter, encounterDate, conditionSummary, locationName, encounterUuid } =
+                referral;
+              const date = (encounterDate || new Date().toISOString()).split('T')[0];
+          
+              // -- Message 1: Health center notification --
+              try {
+                await sendMessage({
+                  messaging_product: 'whatsapp',
+                  to: healthCenter.hc_whatsapp.replace(/[^0-9]/g, ''),
+                  type: 'template',
+                  template: {
+                    name: 'ncd_referral_hc_notify',
+                    language: { code: 'en' },
+                    components: [{
+                      type: 'body',
+                      parameters: [
+                        { type: 'text', text: healthCenter.hc_name },
+                        { type: 'text', text: patient.name },
+                        { type: 'text', text: patient.birthdate || 'N/A' },
+                        { type: 'text', text: locationName },
+                        { type: 'text', text: date },
+                        { type: 'text', text: conditionSummary },
+                        { type: 'text', text: patient.openmrsId },
+                      ],
+                    }],
+                  },
+                });
+                console.log(`  HC notification sent to ${healthCenter.hc_name} (${healthCenter.hc_whatsapp})`);
+              } catch (err) {
+                console.error(`  Failed to notify HC ${healthCenter.hc_name}: ${err.message}`);
+              }
+          
+              // -- Message 2: Patient notification (only if phone recorded) --
+              if (patient.phone) {
+                try {
+                  await sendMessage({
+                    messaging_product: 'whatsapp',
+                    to: patient.phone.replace(/[^0-9]/g, ''),
+                    type: 'template',
+                    template: {
+                      name: 'ncd_referral_patient_notify',
+                      language: { code: 'en' },
+                      components: [{
+                        type: 'body',
+                        parameters: [
+                          { type: 'text', text: patient.firstName },
+                          { type: 'text', text: date },
+                          { type: 'text', text: healthCenter.hc_name },
+                        ],
+                      }],
+                    },
+                  });
+                  console.log(`  Patient notification sent to ${patient.name} (${patient.phone})`);
+                } catch (err) {
+                  console.error(`  Failed to notify patient ${patient.name}: ${err.message}`);
+                }
+              } else {
+                console.log(`  No phone for ${patient.name} — patient notification skipped`);
+              }
+          
+              newlyProcessedUuids.push(encounterUuid);
+            }
+          
+            const existing = state.processedUuids || [];
+            const updated = [...existing, ...newlyProcessedUuids].slice(-10000);
+          
+            console.log(`Pipeline complete. ${newlyProcessedUuids.length} encounter(s) marked as processed.`);
+          
+            return { ...state, processedUuids: updated };
+          });
+          
+    triggers:
+      cron:
+        type: cron
+        cron_expression: '*/15 * * * *'
+        enabled: true
+      webhook:
+        type: webhook
+        webhook_reply: before_start
+        enabled: true
+    edges:
+      cron->Fetch-NCD-Encounters-from-OpenMRS:
+        source_trigger: cron
+        target_job: Fetch-NCD-Encounters-from-OpenMRS
+        condition_type: always
+        enabled: true
+      Fetch-NCD-Encounters-from-OpenMRS->Check-Obs-Against-NCD-Thresholds:
+        source_job: Fetch-NCD-Encounters-from-OpenMRS
+        target_job: Check-Obs-Against-NCD-Thresholds
+        condition_type: on_job_success
+        enabled: true
+      Check-Obs-Against-NCD-Thresholds->Fetch-Patient-Details-and-Route-to-Health-Center:
+        source_job: Check-Obs-Against-NCD-Thresholds
+        target_job: Fetch-Patient-Details-and-Route-to-Health-Center
+        condition_type: on_job_success
+        enabled: true
+      Fetch-Patient-Details-and-Route-to-Health-Center->Create-Patient-and-Referral-in-E-Buzima:
+        source_job: Fetch-Patient-Details-and-Route-to-Health-Center
+        target_job: Create-Patient-and-Referral-in-E-Buzima
+        condition_type: on_job_success
+        enabled: true
+      Create-Patient-and-Referral-in-E-Buzima->Send-WhatsApp-Notifications-to-HC-and-Patient:
+        source_job: Create-Patient-and-Referral-in-E-Buzima
+        target_job: Send-WhatsApp-Notifications-to-HC-and-Patient
+        condition_type: on_job_success
+        enabled: true
+      webhook->Fetch-NCD-Encounters-from-OpenMRS:
+        source_trigger: webhook
+        target_job: Fetch-NCD-Encounters-from-OpenMRS
+        condition_type: always
+        enabled: true

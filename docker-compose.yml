@@ -4,7 +4,7 @@ version: "3.8"
 # NCD Community Referral — Local Development Environment
 #
 # Services:
-#   OpenMRS   → http://localhost:8080/openmrs  (admin / Admin123)
+#   OpenMRS   → http://localhost:18080/openmrs  (admin / Admin123)
 #   OpenFn    → http://localhost:4000          (see OPENFN_ADMIN_EMAIL in .env)
 #   ERPNext   → http://localhost:8000          (admin / admin)
 #   WhatsApp  → http://localhost:9000          (mock — logs all API calls)
@@ -15,7 +15,7 @@ services:
   # ── OpenMRS ──────────────────────────────────────────────────────────────
 
   openmrs:
-    image: openmrs/openmrs-reference-application-3-backend:nightly
+    image: openmrs/openmrs-reference-application-3-backend:3.7.0
     restart: unless-stopped
     environment:
       OMRS_CONFIG_AUTO_UPDATE_DATABASE: "true"
@@ -27,7 +27,7 @@ services:
       OMRS_DB_HOSTNAME: openmrs-db
       OMRS_DB_PORT: "3306"
     ports:
-      - "8080:8080"
+      - "18080:8080"
     depends_on:
       openmrs-db:
         condition: service_healthy
@@ -41,7 +41,7 @@ services:
       start_period: 120s
 
   openmrs-frontend:
-    image: openmrs/openmrs-reference-application-3-frontend:nightly
+    image: openmrs/openmrs-reference-application-3-frontend:3.7.0
     restart: unless-stopped
     environment:
       SPA_PATH: /openmrs/spa
@@ -50,7 +50,7 @@ services:
     depends_on:
       - openmrs
     ports:
-      - "8081:80"
+      - "18081:80"
     volumes:
       - ./config/openmrs-frontend-nginx.conf:/etc/nginx/nginx.conf:ro
 

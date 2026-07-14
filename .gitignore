@@ -1,2 +1,6 @@
 .env
 config/generated/
+video/
+DEMO_SCRIPT.md
+DEMO_SCRIPT_MEDIUM.md
+DEMO_SCRIPT_SHORT.md
