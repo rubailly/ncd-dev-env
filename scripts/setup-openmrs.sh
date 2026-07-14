@@ -2,7 +2,7 @@
 set -euo pipefail
 [ -f .env ] && set -o allexport && source .env && set +o allexport
 
-OPENMRS_URL="http://localhost:8080/openmrs"
+OPENMRS_URL="${OPENMRS_URL:-http://localhost:18080/openmrs}"
 OPENMRS_USER="admin"
 OPENMRS_PASS="${OPENMRS_ADMIN_PASSWORD:-Admin123}"
 AUTH="-u ${OPENMRS_USER}:${OPENMRS_PASS}"

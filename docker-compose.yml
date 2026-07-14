@@ -4,10 +4,11 @@ version: "3.8"
 # NCD Community Referral — Local Development Environment
 #
 # Services:
-#   OpenMRS   → http://localhost:18080/openmrs  (admin / Admin123)
-#   OpenFn    → http://localhost:4000          (see OPENFN_ADMIN_EMAIL in .env)
-#   ERPNext   → http://localhost:8000          (admin / admin)
-#   WhatsApp  → http://localhost:9000          (mock — logs all API calls)
+#   OpenMRS UI  → http://localhost:18081/openmrs/spa  (admin / Admin123)
+#   OpenMRS API → http://localhost:18080/openmrs      (admin / Admin123)
+#   OpenFn      → http://localhost:4000               (see OPENFN_ADMIN_EMAIL in .env)
+#   ERPNext     → http://localhost:8000               (admin / admin)
+#   WhatsApp    → http://localhost:9000               (mock; logs all API calls)
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:

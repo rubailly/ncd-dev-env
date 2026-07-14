@@ -6,7 +6,8 @@ up:
 	docker compose up -d
 	@echo ""
 	@echo "Services starting. Run 'make logs' to watch, or 'make ps' to check health."
-	@echo "  OpenMRS  → http://localhost:8080/openmrs  (admin / Admin123)"
+	@echo "  OpenMRS UI  → http://localhost:18081/openmrs/spa  (admin / Admin123)"
+	@echo "  OpenMRS API → http://localhost:18080/openmrs      (admin / Admin123)"
 	@echo "  OpenFn   → http://localhost:4000          ($$(grep OPENFN_ADMIN_EMAIL .env 2>/dev/null | cut -d= -f2 || echo 'see .env'))"
 	@echo "  ERPNext  → http://localhost:8000          (admin / admin)"
 	@echo "  WhatsApp mock → http://localhost:9000"
