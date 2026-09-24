@@ -77,6 +77,8 @@ services:
   openfn:
     image: openfn/lightning:latest
     restart: unless-stopped
+    # The image doesn't migrate on boot; migrations are idempotent, so run them every start
+    command: ["sh", "-c", "/app/bin/migrate && exec /app/bin/server"]
     environment:
       DATABASE_URL: "postgresql://openfn:${OPENFN_DB_PASSWORD:-openfn}@openfn-db:5432/lightning"
       SECRET_KEY_BASE: "${OPENFN_SECRET_KEY_BASE:-local_dev_secret_key_base_must_be_at_least_64_chars_long_xxxxxxxxxxx}"

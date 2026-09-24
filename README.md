@@ -140,9 +140,10 @@ The pipeline runs on two triggers (both configured in `project.yaml`):
 ## Development loop
 
 ```bash
-# Edit a job file in ../ncd-community-referral/jobs/
-# Then redeploy:
+# Edit a job in docs/ncd-community-referral-export.yaml (the deployable spec;
+# set PROJECT_SPEC= in .env to deploy a different one). Then redeploy:
 make deploy
+# ../ncd-community-referral is still needed for its seed/ Collection data.
 
 # Trigger a fresh run:
 make seed     # creates new encounters with high readings

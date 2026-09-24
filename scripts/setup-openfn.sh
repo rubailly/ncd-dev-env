@@ -5,7 +5,8 @@ set -euo pipefail
 OPENFN_URL="http://localhost:4000"
 ADMIN_EMAIL="${OPENFN_ADMIN_EMAIL:-admin@local.dev}"
 GENERATED_DIR="config/generated"
-OPENFN_CONTAINER="${OPENFN_CONTAINER:-ncd-dev-env-openfn-1}"
+# Exec via compose so this works under any COMPOSE_PROJECT_NAME
+EXEC="docker compose exec -T openfn"
 mkdir -p "$GENERATED_DIR"
 
 # ── Wait for OpenFn Lightning to be ready ────────────────────────────────────
@@ -18,12 +19,31 @@ done
 echo ""
 echo "  OpenFn Lightning is ready."
 
+# ── Create admin user (if not exists) ────────────────────────────────────────
+# A fresh Lightning has no users; create a confirmed superuser from .env
+echo "  Ensuring admin user ${ADMIN_EMAIL} exists..."
+$EXEC /app/bin/lightning rpc "
+  alias Lightning.{Repo, Accounts}
+  email = \"${ADMIN_EMAIL}\"
+  case Repo.get_by(Accounts.User, email: email) do
+    nil ->
+      {:ok, u} = Accounts.register_superuser(%{
+        first_name: \"Local\", last_name: \"Admin\", email: email,
+        password: \"${OPENFN_ADMIN_PASSWORD}\"
+      })
+      Repo.update!(Ecto.Changeset.change(u, confirmed_at: DateTime.truncate(DateTime.utc_now(), :second)))
+      IO.puts(\"  created: #{email}\")
+    _ ->
+      IO.puts(\"  exists: #{email}\")
+  end
+" 2>/dev/null
+
 # ── Generate API token via Lightning runtime ──────────────────────────────────
 # Lightning v2.16+ removed the username/password token endpoint.
 # PATs are JWT (RS256) that must be generated and stored in user_tokens via RPC.
 echo "  Generating API token via Lightning runtime..."
 
-API_TOKEN=$(docker exec "${OPENFN_CONTAINER}" /app/bin/lightning rpc "
+API_TOKEN=$($EXEC /app/bin/lightning rpc "
   user = Lightning.Repo.get_by!(Lightning.Accounts.User, email: \"${ADMIN_EMAIL}\")
   {token_bin, changeset} = Lightning.Accounts.UserToken.build_token(user, \"api\")
   {:ok, _} = Lightning.Repo.insert(changeset)
@@ -31,7 +51,7 @@ API_TOKEN=$(docker exec "${OPENFN_CONTAINER}" /app/bin/lightning rpc "
 " 2>/dev/null | tail -1)
 
 if [ -z "$API_TOKEN" ]; then
-  echo "  ERROR: Could not generate API token. Is ${OPENFN_CONTAINER} running?"
+  echo "  ERROR: Could not generate API token. Is the openfn service running?"
   echo "  If the admin user doesn't exist, visit ${OPENFN_URL} and register"
   echo "  with email ${ADMIN_EMAIL}, then re-run 'make setup-openfn'."
   exit 1
@@ -45,7 +65,7 @@ AUTH_HEADER="Authorization: Bearer ${API_TOKEN}"
 # ── Create or find the project ───────────────────────────────────────────────
 echo "  Creating OpenFn project (if not exists)..."
 
-PROJECT_ID=$(docker exec "${OPENFN_CONTAINER}" /app/bin/lightning rpc "
+PROJECT_ID=$($EXEC /app/bin/lightning rpc "
   alias Lightning.{Repo, Projects}
   import Ecto.Query
 
@@ -71,7 +91,7 @@ echo "  ✓ Project ID: ${PROJECT_ID}"
 # ── Create Collections (if not exist) ─────────────────────────────────────────
 echo "  Creating Collections (if not exist)..."
 
-docker exec "${OPENFN_CONTAINER}" /app/bin/lightning rpc "
+$EXEC /app/bin/lightning rpc "
   alias Lightning.{Repo, Collections}
 
   project = Repo.get_by!(Lightning.Projects.Project, name: \"ncd-community-referral\")
@@ -142,40 +162,53 @@ for loc_uuid, val in routing.items():
 print(f"  {ok} entries uploaded.")
 PYEOF
 
-# ── Create credentials (if not exist) ────────────────────────────────────────
-echo "  Creating credentials (if not exist)..."
+# ── Create credentials and sync their bodies ─────────────────────────────────
+# Lightning 2.16+ keeps secrets in credential_bodies (per env, default "main");
+# a top-level body: on create_credential is ignored. Bodies are rewritten on
+# every run so the rotated OpenFn token and ERPNext key stay in sync.
+echo "  Creating credentials and syncing bodies..."
 
 API_KEY=$(python3 -c "import json; d=json.load(open('${GENERATED_DIR}/erpnext-api-credentials.json')); print(d['api_key'])" 2>/dev/null || echo "")
 API_SECRET=$(python3 -c "import json; d=json.load(open('${GENERATED_DIR}/erpnext-api-credentials.json')); print(d['api_secret'])" 2>/dev/null || echo "")
 
 OPENMRS_PASSWORD="${OPENMRS_ADMIN_PASSWORD:-Admin123}"
 
-docker exec "${OPENFN_CONTAINER}" /app/bin/lightning rpc "
-  import Ecto.Query
+$EXEC /app/bin/lightning rpc "
   alias Lightning.{Repo, Credentials}
+  alias Lightning.Credentials.{Credential, CredentialBody}
 
   user = Repo.get_by!(Lightning.Accounts.User, email: \"${ADMIN_EMAIL}\")
   project = Repo.get_by!(Lightning.Projects.Project, name: \"ncd-community-referral\")
 
   cred_defs = [
-    {\"OpenMRS\", %{\"instanceUrl\" => \"http://openmrs:8080/openmrs\", \"username\" => \"admin\", \"password\" => \"${OPENMRS_PASSWORD}\"}},
-    {\"EBuzima API\", %{\"api_key\" => \"${API_KEY}\", \"api_secret\" => \"${API_SECRET}\", \"baseUrl\" => \"http://erpnext-frontend:8080\"}},
+    # collections_*: Jobs 1 and 3 read Collections over HTTP from the worker
+    {\"OpenMRS\", %{\"instanceUrl\" => \"http://openmrs:8080/openmrs\", \"username\" => \"admin\", \"password\" => \"${OPENMRS_PASSWORD}\",
+                  \"collections_endpoint\" => \"http://openfn:4000/collections\", \"collections_token\" => \"${API_TOKEN}\"}},
+    # apiKey/apiSecret: language-erpnext logs in with these before the job maps api_key/api_secret
+    {\"EBuzima API\", %{\"api_key\" => \"${API_KEY}\", \"api_secret\" => \"${API_SECRET}\", \"apiKey\" => \"${API_KEY}\", \"apiSecret\" => \"${API_SECRET}\",
+                      \"baseUrl\" => \"http://erpnext-frontend:8080\"}},
     {\"WhatsApp Meta API\", %{\"accessToken\" => \"test-token\", \"phoneNumberId\" => \"123456789\", \"baseUrl\" => \"http://mock-whatsapp:9000\"}}
   ]
 
   for {name, body} <- cred_defs do
-    case Repo.get_by(Lightning.Credentials.Credential, name: name) do
+    cred = case Repo.get_by(Credential, name: name) do
       nil ->
         {:ok, cred} = Credentials.create_credential(%{
           name: name,
           schema: \"raw\",
           user_id: user.id,
-          body: body,
           project_credentials: [%{project_id: project.id}]
         })
         IO.puts(\"  created: #{name} (#{cred.id})\")
+        cred
       existing ->
         IO.puts(\"  exists: #{name} (#{existing.id})\")
+        existing
+    end
+
+    case Repo.get_by(CredentialBody, credential_id: cred.id, name: \"main\") do
+      nil -> Repo.insert!(%CredentialBody{credential_id: cred.id, name: \"main\", body: body})
+      b -> Repo.update!(Ecto.Changeset.change(b, body: body))
     end
   end
 " 2>/dev/null

@@ -12,7 +12,7 @@ TEMPLATES=$(cat <<'EOF'
 EOF
 )
 
-docker logs -f --tail 0 ncd-dev-env-mock-whatsapp-1 2>/dev/null | python3 -u -c "
+docker logs -f --tail 0 "$(docker compose ps -q mock-whatsapp)" 2>/dev/null | python3 -u -c "
 import sys, json
 
 templates = json.loads('''$TEMPLATES''')

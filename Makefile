@@ -30,7 +30,8 @@ logs-%:
 
 # ── First-time setup (run once after 'make up') ──────────────────────────────
 
-setup: setup-openmrs setup-erpnext setup-openfn
+# Order matters: openfn needs the ERPNext API key; openmrs writes routing into OpenFn Collections
+setup: setup-erpnext setup-openfn setup-openmrs
 	@echo ""
 	@echo "✓ Setup complete. Run 'make seed' to load test data, then 'make deploy' to push the workflow."
 
