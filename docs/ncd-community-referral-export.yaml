@@ -37,10 +37,19 @@ workflows:
             const authHeaders = util.makeBasicAuthHeader(username, password);
           
             let encounterTypeUuid = DEFAULT_ENCOUNTER_TYPE_UUID;
+            // Collections aren't exposed on state in this adaptor; read over HTTP like Job 3
+            const { collections_endpoint, collections_token } = state.configuration;
             try {
-              const raw = await state.collections.get('ncd-screening-config', 'encounter-type-uuid');
+              const resp = await util.request(
+                'GET',
+                `${collections_endpoint}/ncd-screening-config/encounter-type-uuid`,
+                { headers: { Authorization: `Bearer ${collections_token}` }, parseAs: 'json' }
+              );
+              const raw = resp.statusCode === 200 ? resp.body?.value : null;
               if (raw && typeof raw === 'string') encounterTypeUuid = raw.trim();
-            } catch (_) {}
+            } catch (e) {
+              console.warn(`Could not read encounter-type-uuid from collection: ${e.message}`);
+            }
           
             const since = state.lastRunAt
               ? new Date(new Date(state.lastRunAt).getTime() - OVERLAP_MS).toISOString()
@@ -202,7 +211,7 @@ workflows:
                 if (resp.statusCode < 300) {
                   const p = resp.body;
                   const phoneAttr = (p.person.attributes || []).find(
-                    a => a.attributeType?.name === 'Telephone Number'
+                    a => (a.attributeType?.name || a.attributeType?.display) === 'Telephone Number'
                   );
                   patient = {
                     patientUuid: p.uuid,
@@ -350,7 +359,7 @@ workflows:
                 const apptState = await execute(
                   create('Patient Appointment', {
                     patient: erpPatientName,
-                    appointment_for: 'Patient',
+                    appointment_for: 'Practitioner',
                     appointment_type: 'NCD Follow-Up',
                     appointment_date: encounterDate?.split('T')[0] || new Date().toISOString().split('T')[0],
                     company: healthCenter.hc_name,

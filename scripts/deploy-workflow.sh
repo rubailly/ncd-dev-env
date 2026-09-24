@@ -2,12 +2,13 @@
 set -euo pipefail
 [ -f .env ] && set -o allexport && source .env && set +o allexport
 
-WORKFLOW_DIR="${WORKFLOW_DIR:-../ncd-community-referral}"
+# The export in docs/ is the working, deployable spec (credential keys in
+# "<owner>-<name>" form, pinned adaptors). Override with PROJECT_SPEC= in .env.
+PROJECT_SPEC="${PROJECT_SPEC:-docs/ncd-community-referral-export.yaml}"
 GENERATED_DIR="config/generated"
 
-if [ ! -d "$WORKFLOW_DIR" ]; then
-  echo "ERROR: Workflow directory not found at ${WORKFLOW_DIR}"
-  echo "Clone ncd-community-referral alongside this repo, or set WORKFLOW_DIR= in .env"
+if [ ! -f "$PROJECT_SPEC" ]; then
+  echo "ERROR: Project spec not found at ${PROJECT_SPEC}"
   exit 1
 fi
 
@@ -49,22 +50,37 @@ PYEOF
 fi
 
 # Deploy the workflow with openfn CLI
-echo "  Deploying workflow from ${WORKFLOW_DIR}..."
+echo "  Deploying workflow from ${PROJECT_SPEC}..."
 
 TOKEN=$(cat "${GENERATED_DIR}/openfn-token.txt" 2>/dev/null || echo "")
 PROJECT_ID=$(cat "${GENERATED_DIR}/openfn-project-id.txt" 2>/dev/null || echo "")
 
-if [ -z "$TOKEN" ]; then
-  echo "ERROR: No OpenFn token found. Run 'make setup-openfn' first."
+if [ -z "$TOKEN" ] || [ -z "$PROJECT_ID" ]; then
+  echo "ERROR: No OpenFn token or project ID found. Run 'make setup-openfn' first."
   exit 1
 fi
 
-cd "$WORKFLOW_DIR"
-OPENFN_API_KEY="$TOKEN" \
-OPENFN_ENDPOINT="http://localhost:4000" \
-npx --yes @openfn/cli deploy \
-  -c project.yaml \
-  --no-confirm \
-  ${PROJECT_ID:+--project-id "$PROJECT_ID"} 2>&1
+export OPENFN_API_KEY="$TOKEN"
+export OPENFN_ENDPOINT="http://localhost:4000"
 
-echo "  ✓ Workflow deployed. Visit http://localhost:4000 to view and run it."
+# Deploying without a state file creates a new project, but the Collections
+# belong to the one setup-openfn created. Pull it first to get its state.
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
+cp "$PROJECT_SPEC" "$WORK_DIR/spec.yaml"
+
+# An empty project pulls with a "must provide at least one workflow" warning
+# but still writes .state.json, so check for the file rather than the exit code
+(cd "$WORK_DIR" && npx --yes @openfn/cli pull "$PROJECT_ID" > pull.log 2>&1) || true
+if [ ! -f "$WORK_DIR/.state.json" ]; then
+  echo "ERROR: Could not pull project ${PROJECT_ID}:"
+  tail -20 "$WORK_DIR/pull.log"
+  exit 1
+fi
+
+(cd "$WORK_DIR" && npx --yes @openfn/cli deploy \
+  -p spec.yaml \
+  -s .state.json \
+  --no-confirm 2>&1 | tail -3)
+
+echo "  ✓ Workflow deployed. Visit http://localhost:4000/projects/${PROJECT_ID}/w to view and run it."

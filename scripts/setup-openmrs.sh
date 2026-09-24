@@ -101,14 +101,14 @@ loc_uuids = json.loads(pathlib.Path("${GENERATED_DIR}/location-uuids.json").read
 
 # Maps location name → health center config (for local dev testing)
 location_to_hc = {
-    "Kamonyi Community Site A":    {"fossa_code":"4/1/5/2","hc_name":"Kamonyi Health Center","district":"Kamonyi","erp_base_url":"http://erpnext-backend:8000","hc_whatsapp":"+250788100001"},
-    "Kamonyi Community Site B":    {"fossa_code":"4/1/5/4","hc_name":"Gacurabwenge Health Center","district":"Kamonyi","erp_base_url":"http://erpnext-backend:8000","hc_whatsapp":"+250788100002"},
-    "Rusizi Community Site A":     {"fossa_code":"2/7/3/1","hc_name":"Gihundwe Health Center","district":"Rusizi","erp_base_url":"http://erpnext-backend:8000","hc_whatsapp":"+250788200001"},
-    "Rusizi Community Site B":     {"fossa_code":"2/7/3/3","hc_name":"Kamembe Health Center","district":"Rusizi","erp_base_url":"http://erpnext-backend:8000","hc_whatsapp":"+250788200002"},
-    "Nyamasheke Community Site A": {"fossa_code":"2/6/4/1","hc_name":"Nyamasheke Health Center","district":"Nyamasheke","erp_base_url":"http://erpnext-backend:8000","hc_whatsapp":"+250788300001"},
-    "Nyamasheke Community Site B": {"fossa_code":"2/6/4/3","hc_name":"Shangi Health Center","district":"Nyamasheke","erp_base_url":"http://erpnext-backend:8000","hc_whatsapp":"+250788300002"},
-    "Karongi Community Site A":    {"fossa_code":"2/4/2/1","hc_name":"Karongi Health Center","district":"Karongi","erp_base_url":"http://erpnext-backend:8000","hc_whatsapp":"+250788400001"},
-    "Karongi Community Site B":    {"fossa_code":"2/4/2/3","hc_name":"Bwishyura Health Center","district":"Karongi","erp_base_url":"http://erpnext-backend:8000","hc_whatsapp":"+250788400002"},
+    "Kamonyi Community Site A":    {"fossa_code":"4/1/5/2","hc_name":"Kamonyi Health Center","district":"Kamonyi","erp_base_url":"http://erpnext-frontend:8080","hc_whatsapp":"+250788100001"},
+    "Kamonyi Community Site B":    {"fossa_code":"4/1/5/4","hc_name":"Gacurabwenge Health Center","district":"Kamonyi","erp_base_url":"http://erpnext-frontend:8080","hc_whatsapp":"+250788100002"},
+    "Rusizi Community Site A":     {"fossa_code":"2/7/3/1","hc_name":"Gihundwe Health Center","district":"Rusizi","erp_base_url":"http://erpnext-frontend:8080","hc_whatsapp":"+250788200001"},
+    "Rusizi Community Site B":     {"fossa_code":"2/7/3/3","hc_name":"Kamembe Health Center","district":"Rusizi","erp_base_url":"http://erpnext-frontend:8080","hc_whatsapp":"+250788200002"},
+    "Nyamasheke Community Site A": {"fossa_code":"2/6/4/1","hc_name":"Nyamasheke Health Center","district":"Nyamasheke","erp_base_url":"http://erpnext-frontend:8080","hc_whatsapp":"+250788300001"},
+    "Nyamasheke Community Site B": {"fossa_code":"2/6/4/3","hc_name":"Shangi Health Center","district":"Nyamasheke","erp_base_url":"http://erpnext-frontend:8080","hc_whatsapp":"+250788300002"},
+    "Karongi Community Site A":    {"fossa_code":"2/4/2/1","hc_name":"Karongi Health Center","district":"Karongi","erp_base_url":"http://erpnext-frontend:8080","hc_whatsapp":"+250788400001"},
+    "Karongi Community Site B":    {"fossa_code":"2/4/2/3","hc_name":"Bwishyura Health Center","district":"Karongi","erp_base_url":"http://erpnext-frontend:8080","hc_whatsapp":"+250788400002"},
 }
 
 for loc_name, loc_uuid in loc_uuids.items():
