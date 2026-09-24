@@ -78,7 +78,7 @@ docker exec "${OPENFN_CONTAINER}" /app/bin/lightning rpc "
 
   for cname <- [\"ncd-screening-config\", \"rw-facility-routing\"] do
     case Collections.get_collection(cname) do
-      nil ->
+      missing when missing in [nil, {:error, :not_found}] ->
         {:ok, _} = Collections.create_collection(%{name: cname, project_id: project.id})
         IO.puts(\"  created: #{cname}\")
       _ ->

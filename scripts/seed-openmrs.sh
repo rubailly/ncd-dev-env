@@ -60,6 +60,14 @@ cat > "${GENERATED_DIR}/concept-uuids.json" <<JSON
 }
 JSON
 
+# RefApp 3.x requires an "OpenMRS ID" (Luhn mod-30 check digit), issued by idgen
+OPENMRS_ID_TYPE="05a29f94-c0ed-11e2-94be-8c13b969e334"
+OPENMRS_ID_SOURCE="8549f706-7e85-4c1d-9424-217d50a2988b"
+new_openmrs_id() {
+  post "idgen/identifiersource/${OPENMRS_ID_SOURCE}/identifier" "{}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['identifier'])"
+}
+
 create_patient_and_encounter() {
   local given="$1" family="$2" phone="$3" systolic="$4" diastolic="$5" glucose="$6" description="$7"
 
@@ -75,10 +83,15 @@ create_patient_and_encounter() {
       }]
     },
     \"identifiers\": [{
+      \"identifier\": \"$(new_openmrs_id)\",
+      \"identifierType\": \"${OPENMRS_ID_TYPE}\",
+      \"location\": \"${LOCATION_UUID}\",
+      \"preferred\": true
+    }, {
       \"identifier\": \"NCD-$(date +%s%N | tail -c 6)\",
       \"identifierType\": \"8d79403a-c2cc-11de-8d13-0010c6dffd0f\",
       \"location\": \"${LOCATION_UUID}\",
-      \"preferred\": true
+      \"preferred\": false
     }]
   }" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uuid',''))" 2>/dev/null || echo "")
 
@@ -89,7 +102,7 @@ create_patient_and_encounter() {
 
   # Create NCD encounter with obs
   local obs_array="[]"
-  if [ "$systolic" -gt 0 ]; then
+  if [ "$systolic" -gt 0 ] || [ "$diastolic" -gt 0 ] || [ "$glucose" -gt 0 ]; then
     obs_array=$(python3 -c "
 import json
 obs = []

@@ -21,7 +21,7 @@ done
 echo ""
 
 # ── Create site ───────────────────────────────────────────────────────────────
-site_exists=$($EXEC bench --site "$SITE" show-config 2>/dev/null | grep -c "db_host" || echo "0")
+site_exists=$($EXEC bench --site "$SITE" show-config 2>/dev/null | grep -c "db_host" || true)
 
 if [ "$site_exists" -eq 0 ]; then
   echo "  Creating ERPNext site: ${SITE}..."
@@ -38,7 +38,7 @@ fi
 # The healthcare app must be downloaded in the erpnext-backend container.
 # NOTE: It is installed into the container's writable layer (not a shared volume).
 # After 'docker compose down && docker compose up', re-run 'make setup-erpnext'.
-healthcare_in_apps=$($EXEC ls /home/frappe/frappe-bench/apps/ 2>/dev/null | grep -c "^healthcare$" || echo "0")
+healthcare_in_apps=$($EXEC ls /home/frappe/frappe-bench/apps/ 2>/dev/null | grep -c "^healthcare$" || true)
 
 if [ "$healthcare_in_apps" -eq 0 ]; then
   echo "  Downloading Healthcare app (requires internet access)..."
@@ -46,7 +46,7 @@ if [ "$healthcare_in_apps" -eq 0 ]; then
   echo "  ✓ Healthcare app downloaded."
 fi
 
-healthcare_installed=$($EXEC bench --site "$SITE" list-apps 2>/dev/null | grep -c "healthcare" || echo "0")
+healthcare_installed=$($EXEC bench --site "$SITE" list-apps 2>/dev/null | grep -c "healthcare" || true)
 
 if [ "$healthcare_installed" -eq 0 ]; then
   echo "  Installing Healthcare app on site ${SITE}..."
@@ -92,6 +92,16 @@ for wt in "Transit" "Finished Goods" "Work In Progress" "Raw Material" "Scrap"; 
     -d "{\"doctype\":\"Warehouse Type\",\"name\":\"${wt}\"}" > /dev/null 2>&1 || true
 done
 echo "  ✓ Warehouse Types ready."
+
+# Patient.sex links to Gender; these records normally come from the setup wizard
+echo "  Ensuring Gender records exist..."
+for g in "Male" "Female" "Other"; do
+  curl -sf -X POST "${BASE_URL}/api/resource/Gender" \
+    -H "Content-Type: application/json" \
+    -H "${AUTH_HEADER}" \
+    -d "{\"gender\":\"${g}\"}" > /dev/null 2>&1 || true
+done
+echo "  ✓ Gender records ready."
 
 # ── Create health center companies ───────────────────────────────────────────
 echo "  Creating health center companies..."
@@ -191,7 +201,7 @@ echo "  ✓ Healthcare domain activated."
 echo "  Creating Appointment Type and Practitioner..."
 
 python3 - <<PYEOF2
-import subprocess, json
+import subprocess, json, urllib.parse
 
 base_url = "${BASE_URL}"
 api_key = "${API_KEY}"
@@ -199,7 +209,7 @@ api_secret = "${API_SECRET}"
 auth = f"token {api_key}:{api_secret}"
 
 def post(path, body):
-    r = subprocess.run(["curl", "-s", "-X", "POST", f"{base_url}{path}",
+    r = subprocess.run(["curl", "-s", "-X", "POST", f"{base_url}{urllib.parse.quote(path)}",
         "-H", f"Authorization: {auth}", "-H", "Content-Type: application/json",
         "-d", json.dumps(body)], capture_output=True, text=True)
     return json.loads(r.stdout) if r.stdout else {}
